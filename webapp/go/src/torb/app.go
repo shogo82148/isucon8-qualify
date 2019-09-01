@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
@@ -233,7 +233,8 @@ func getEvent(eventID, loginUserID int64) (*Event, error) {
 		"C": &Sheets{},
 	}
 
-	rows, err := db.Query("SELECT * FROM sheets ORDER BY `rank`, num")
+	rows, err := db.Query("SELECT * FROM sheets AS s LEFT JOIN reservations AS r ON s.id = r.sheet_id AND canceled_at IS NULL"
+	+" AND r.event_id = ? GROUP BY s.id HAVING r.reserved_at = MIN(r.reserved_at) OR r.reserved_at IS NULL", event.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -241,24 +242,26 @@ func getEvent(eventID, loginUserID int64) (*Event, error) {
 
 	for rows.Next() {
 		var sheet Sheet
-		if err := rows.Scan(&sheet.ID, &sheet.Rank, &sheet.Num, &sheet.Price); err != nil {
+		var id sql.NullInt64
+		var eventID sql.NullInt64
+		var sheetID sql.NullInt64
+		var userID sql.NullInt64
+		var reservedAt mysql.NullTime
+		var canceledAt mysql.NullTime
+		if err := rows.Scan(&sheet.ID, &sheet.Rank, &sheet.Num, &sheet.Price, &id, &eventID, &sheetID, &userID, &reservedAt, &canceledAt); err != nil {
 			return nil, err
 		}
 		event.Sheets[sheet.Rank].Price = event.Price + sheet.Price
 		event.Total++
 		event.Sheets[sheet.Rank].Total++
 
-		var reservation Reservation
-		err := db.QueryRow("SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL ORDER BY reserved_at DESC LIMIT 1", event.ID, sheet.ID).Scan(&reservation.ID, &reservation.EventID, &reservation.SheetID, &reservation.UserID, &reservation.ReservedAt, &reservation.CanceledAt)
-		if err == nil {
-			sheet.Mine = reservation.UserID == loginUserID
+		if id.Valid {
+			sheet.Mine = userID.Int64 == loginUserID
 			sheet.Reserved = true
-			sheet.ReservedAtUnix = reservation.ReservedAt.Unix()
-		} else if err == sql.ErrNoRows {
+			sheet.ReservedAtUnix = reservedAt.Time.Unix()
+		} else {
 			event.Remains++
 			event.Sheets[sheet.Rank].Remains++
-		} else {
-			return nil, err
 		}
 
 		event.Sheets[sheet.Rank].Detail = append(event.Sheets[sheet.Rank].Detail, &sheet)
